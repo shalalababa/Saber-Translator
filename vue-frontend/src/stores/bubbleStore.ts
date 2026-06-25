@@ -22,6 +22,19 @@ import {
   detectTextDirection
 } from '@/utils/bubbleFactory'
 
+const BUBBLE_HISTORY_LIMIT = 50
+
+interface BubbleHistorySnapshot {
+  bubbles: BubbleState[]
+  selectedIndex: number
+  selectedIndices: number[]
+}
+
+interface BubbleHistoryEntry {
+  before: BubbleHistorySnapshot
+  after: BubbleHistorySnapshot
+}
+
 // ============================================================
 // Store 定义
 // ============================================================
@@ -42,6 +55,12 @@ export const useBubbleStore = defineStore('bubble', () => {
 
   /** 初始气泡状态（用于检测变更） */
   const initialStates = ref<BubbleState[]>([])
+
+  /** Undo history for bubble structure and style/text edits. */
+  const undoStack = ref<BubbleHistoryEntry[]>([])
+
+  /** Redo history for bubble structure and style/text edits. */
+  const redoStack = ref<BubbleHistoryEntry[]>([])
 
   // ============================================================
   // 拖动状态（共享给所有BubbleOverlay组件）
@@ -95,6 +114,12 @@ export const useBubbleStore = defineStore('bubble', () => {
   /** 是否有选中的气泡 */
   const hasSelection = computed<boolean>(() => selectedIndex.value >= 0)
 
+  /** Whether a bubble edit can be undone. */
+  const canUndo = computed<boolean>(() => undoStack.value.length > 0)
+
+  /** Whether a bubble edit can be redone. */
+  const canRedo = computed<boolean>(() => redoStack.value.length > 0)
+
   /** 是否为多选模式 */
   const isMultiSelect = computed<boolean>(() => selectedIndices.value.length > 1)
 
@@ -144,6 +169,71 @@ export const useBubbleStore = defineStore('bubble', () => {
   // 气泡管理方法
   // ============================================================
 
+  function captureHistorySnapshot(): BubbleHistorySnapshot {
+    return {
+      bubbles: cloneBubbleStates(bubbles.value),
+      selectedIndex: selectedIndex.value,
+      selectedIndices: [...selectedIndices.value]
+    }
+  }
+
+  function snapshotsEqual(a: BubbleHistorySnapshot, b: BubbleHistorySnapshot): boolean {
+    return JSON.stringify(a) === JSON.stringify(b)
+  }
+
+  function restoreHistorySnapshot(snapshot: BubbleHistorySnapshot): void {
+    bubbles.value = cloneBubbleStates(snapshot.bubbles)
+    selectedIndex.value = snapshot.selectedIndex >= 0 && snapshot.selectedIndex < bubbles.value.length
+      ? snapshot.selectedIndex
+      : -1
+    selectedIndices.value = snapshot.selectedIndices
+      .filter((index) => index >= 0 && index < bubbles.value.length)
+
+    syncToCurrentImage()
+  }
+
+  function clearHistory(): void {
+    undoStack.value = []
+    redoStack.value = []
+  }
+
+  function pushHistory(before: BubbleHistorySnapshot): void {
+    const after = captureHistorySnapshot()
+    if (snapshotsEqual(before, after)) {
+      return
+    }
+
+    undoStack.value.push({ before, after })
+    if (undoStack.value.length > BUBBLE_HISTORY_LIMIT) {
+      undoStack.value.shift()
+    }
+    redoStack.value = []
+  }
+
+  function undo(): boolean {
+    const entry = undoStack.value.pop()
+    if (!entry) {
+      return false
+    }
+
+    restoreHistorySnapshot(entry.before)
+    redoStack.value.push(entry)
+    console.log('Bubble edit undone')
+    return true
+  }
+
+  function redo(): boolean {
+    const entry = redoStack.value.pop()
+    if (!entry) {
+      return false
+    }
+
+    restoreHistorySnapshot(entry.after)
+    undoStack.value.push(entry)
+    console.log('Bubble edit redone')
+    return true
+  }
+
   /**
    * 设置气泡数组
    * @param newBubbles - 新的气泡数组
@@ -153,6 +243,7 @@ export const useBubbleStore = defineStore('bubble', () => {
     bubbles.value = newBubbles
     initialStates.value = cloneBubbleStates(newBubbles)
     clearSelection()
+    clearHistory()
     console.log(`气泡数组已设置，共 ${newBubbles.length} 个气泡`)
     // 设置初始数据时通常不需要同步（避免覆盖），但可以选择同步
     if (!skipSync) {
@@ -168,6 +259,8 @@ export const useBubbleStore = defineStore('bubble', () => {
    * @returns 新添加的气泡
    */
   function addBubble(coords: BubbleCoords, overrides?: Partial<BubbleState>): BubbleState {
+    const before = captureHistorySnapshot()
+
     // 自动计算排版方向
     const autoDirection = detectTextDirection(coords)
 
@@ -208,6 +301,7 @@ export const useBubbleStore = defineStore('bubble', () => {
       ...overrides
     })
     bubbles.value.push(newBubble)
+    pushHistory(before)
     console.log(`已添加气泡，当前共 ${bubbles.value.length} 个`)
     // 【同步】添加气泡后同步到 currentImage
     syncToCurrentImage()
@@ -225,6 +319,8 @@ export const useBubbleStore = defineStore('bubble', () => {
       return false
     }
 
+    const before = captureHistorySnapshot()
+
     bubbles.value.splice(index, 1)
 
     // 调整选中索引
@@ -238,6 +334,8 @@ export const useBubbleStore = defineStore('bubble', () => {
     selectedIndices.value = selectedIndices.value
       .filter((i) => i !== index)
       .map((i) => (i > index ? i - 1 : i))
+
+    pushHistory(before)
 
     console.log(`已删除气泡，当前共 ${bubbles.value.length} 个`)
     // 【同步】删除气泡后同步到 currentImage
@@ -254,6 +352,8 @@ export const useBubbleStore = defineStore('bubble', () => {
     }
 
     // 获取要删除的索引（去重并排序）
+    const before = captureHistorySnapshot()
+
     const indicesToDelete = [...new Set([...selectedIndices.value, selectedIndex.value])]
       .filter((i) => i >= 0)
       .sort((a, b) => b - a) // 从大到小排序，避免索引偏移问题
@@ -265,6 +365,7 @@ export const useBubbleStore = defineStore('bubble', () => {
 
     // 清除选择
     clearSelection()
+    pushHistory(before)
     console.log(`已删除 ${indicesToDelete.length} 个气泡`)
     // 【同步】批量删除后同步到 currentImage
     syncToCurrentImage()
@@ -277,6 +378,7 @@ export const useBubbleStore = defineStore('bubble', () => {
     bubbles.value = []
     initialStates.value = []
     clearSelection()
+    clearHistory()
     console.log('所有气泡已清除')
     // 【同步】清除后同步到 currentImage
     syncToCurrentImage()
@@ -291,6 +393,7 @@ export const useBubbleStore = defineStore('bubble', () => {
     bubbles.value = []
     initialStates.value = []
     clearSelection()
+    clearHistory()
     console.log('本地气泡状态已清除（不同步到imageStore）')
   }
 
@@ -388,10 +491,13 @@ export const useBubbleStore = defineStore('bubble', () => {
 
     const bubble = bubbles.value[index]
     if (bubble) {
+      const before = captureHistorySnapshot()
+
       if (updates.coords) {
         updates.autoTextDirection = detectTextDirection(updates.coords)
       }
       Object.assign(bubble, updates)
+      pushHistory(before)
       console.log(`已更新气泡 ${index}`)
       // 【同步】复刻旧版逻辑：每次更新单个气泡时同步到 currentImage
       syncToCurrentImage()
@@ -422,6 +528,8 @@ export const useBubbleStore = defineStore('bubble', () => {
       ? selectedIndices.value
       : (selectedIndex.value >= 0 ? [selectedIndex.value] : [])
 
+    const before = indices.length > 0 ? captureHistorySnapshot() : null
+
     for (const index of indices) {
       const bubble = bubbles.value[index]
       if (bubble) {
@@ -431,6 +539,9 @@ export const useBubbleStore = defineStore('bubble', () => {
         }
         Object.assign(bubble, updatesWithAutoDirection)
       }
+    }
+    if (before) {
+      pushHistory(before)
     }
     // 【同步】批量更新后统一同步一次
     syncToCurrentImage()
@@ -442,6 +553,8 @@ export const useBubbleStore = defineStore('bubble', () => {
    * @param updates - 要更新的属性
    */
   function updateAllBubbles(updates: BubbleStateUpdates): void {
+    const before = bubbles.value.length > 0 ? captureHistorySnapshot() : null
+
     for (let i = 0; i < bubbles.value.length; i++) {
       const bubble = bubbles.value[i]
       if (bubble) {
@@ -451,6 +564,9 @@ export const useBubbleStore = defineStore('bubble', () => {
         }
         Object.assign(bubble, updatesWithAutoDirection)
       }
+    }
+    if (before) {
+      pushHistory(before)
     }
     // 【修复问题4】批量更新后同步到 currentImage，确保样式落盘
     syncToCurrentImage()
@@ -638,6 +754,8 @@ export const useBubbleStore = defineStore('bubble', () => {
     bubbleCount,
     hasBubbles,
     hasSelection,
+    canUndo,
+    canRedo,
     isMultiSelect,
     selectedBubbles,
 
@@ -667,6 +785,9 @@ export const useBubbleStore = defineStore('bubble', () => {
     hasChanges,
     resetToInitial,
     saveAsInitial,
+    undo,
+    redo,
+    clearHistory,
 
     // 序列化
     toApiRequest,

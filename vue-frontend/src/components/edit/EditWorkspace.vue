@@ -31,6 +31,8 @@
       :scale="scale"
       :is-drawing-mode="isDrawingMode"
       :has-selection="hasSelection"
+      :can-undo="canUndo"
+      :can-redo="canRedo"
       :brush-mode="brushMode"
       :brush-size="brushSize"
       :mouse-x="mouseX"
@@ -58,6 +60,8 @@
       @translate-with-bubbles="translateWithCurrentBubbles"
       @toggle-drawing-mode="toggleDrawingMode"
       @delete-selected-bubbles="deleteSelectedBubbles"
+      @undo-bubble-edit="undoBubbleEdit"
+      @redo-bubble-edit="redoBubbleEdit"
       @repair-selected-bubble="handleRepairSelectedBubble"
       @activate-repair-brush="activateRepairBrush"
       @activate-restore-brush="activateRestoreBrush"
@@ -458,7 +462,9 @@ const {
   selectedBubble,
   bubbleCount,
   hasBubbles,
-  hasSelection
+  hasSelection,
+  canUndo,
+  canRedo
 } = storeToRefs(bubbleStore)
 
 const {
@@ -1068,6 +1074,18 @@ function handleReRender(): void {
   reRenderFullImage()
 }
 
+function undoBubbleEdit(): void {
+  if (bubbleStore.undo()) {
+    reRenderFullImage()
+  }
+}
+
+function redoBubbleEdit(): void {
+  if (bubbleStore.redo()) {
+    reRenderFullImage()
+  }
+}
+
 function handleExitToolbarAction(): void {
   if (exitDialogState.value === 'saving') {
     return
@@ -1542,6 +1560,24 @@ function handleKeyDown(event: KeyboardEvent): void {
     case 'Escape':
       // 【复刻原版】Escape 退出编辑模式（原版没有此快捷键，但保留作为增强）
       exitEditMode()
+      break
+    case 'z':
+    case 'Z':
+      if ((event.ctrlKey || event.metaKey) && !brushMode.value) {
+        if (event.shiftKey) {
+          redoBubbleEdit()
+        } else {
+          undoBubbleEdit()
+        }
+        event.preventDefault()
+      }
+      break
+    case 'y':
+    case 'Y':
+      if ((event.ctrlKey || event.metaKey) && !brushMode.value) {
+        redoBubbleEdit()
+        event.preventDefault()
+      }
       break
     case 'Delete':
     case 'Backspace':

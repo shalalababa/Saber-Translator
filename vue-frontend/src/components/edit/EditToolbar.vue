@@ -158,6 +158,33 @@
 
         <button
           class="annotation-btn"
+          :disabled="!canUndo"
+          @click="$emit('undo-bubble-edit')"
+          title="撤销气泡编辑 (Ctrl+Z)"
+        >
+          <svg viewBox="0 0 16 16" width="14" height="14">
+            <path d="M6 4L3 7l3 3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M3 7h6.5A3.5 3.5 0 0 1 13 10.5V11" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+          </svg>
+          <span>撤销</span>
+        </button>
+        <button
+          class="annotation-btn"
+          :disabled="!canRedo"
+          @click="$emit('redo-bubble-edit')"
+          title="重做气泡编辑 (Ctrl+Y)"
+        >
+          <svg viewBox="0 0 16 16" width="14" height="14">
+            <path d="M10 4l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M13 7H6.5A3.5 3.5 0 0 0 3 10.5V11" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+          </svg>
+          <span>重做</span>
+        </button>
+
+        <div class="toolbar-divider"></div>
+
+        <button
+          class="annotation-btn"
           :class="{ active: isDrawingMode }"
           @click="$emit('toggle-drawing-mode')"
           title="添加气泡框（或中键拖拽绘制）"
@@ -247,6 +274,8 @@
               <div class="help-title">⌨️ 快捷键</div>
               <div class="help-item"><span class="help-key">A / D</span><span class="help-desc">切换上/下一张图片</span></div>
               <div class="help-item"><span class="help-key">Ctrl+Enter</span><span class="help-desc">应用并跳转下一张</span></div>
+              <div class="help-item"><span class="help-key">Ctrl+Z</span><span class="help-desc">撤销气泡编辑</span></div>
+              <div class="help-item"><span class="help-key">Ctrl+Y / Ctrl+Shift+Z</span><span class="help-desc">重做气泡编辑</span></div>
               <div class="help-item"><span class="help-key">Delete / Backspace</span><span class="help-desc">删除选中气泡</span></div>
               <div class="help-item"><span class="help-key">按住R+左键拖拽</span><span class="help-desc">修复笔刷</span></div>
               <div class="help-item"><span class="help-key">按住U+左键拖拽</span><span class="help-desc">还原笔刷</span></div>
@@ -337,6 +366,10 @@ const props = defineProps<{
   isDrawingMode: boolean
   /** 是否有选中 */
   hasSelection: boolean
+  /** 是否可以撤销气泡编辑 */
+  canUndo: boolean
+  /** 是否可以重做气泡编辑 */
+  canRedo: boolean
   /** 笔刷模式 */
   brushMode: 'repair' | 'restore' | null
   /** 笔刷大小 */
@@ -398,6 +431,10 @@ defineEmits<{
   (e: 'toggle-drawing-mode'): void
   /** 删除选中气泡 */
   (e: 'delete-selected-bubbles'): void
+  /** 撤销气泡编辑 */
+  (e: 'undo-bubble-edit'): void
+  /** 重做气泡编辑 */
+  (e: 'redo-bubble-edit'): void
   /** 修复选中气泡 */
   (e: 'repair-selected-bubble'): void
   /** 激活修复笔刷 */
