@@ -12,7 +12,7 @@ import numpy as np
 from PIL import Image
 
 from src.core.detector.aux_yolo import maybe_merge_with_aux_yolo
-from src.core.detector.data_types import TextBlock, DetectionResult
+from src.core.detector.data_types import TextBlock, TextLine, DetectionResult
 from src.core.detector.base import BaseTextDetector
 from src.core.detector.textline_merge import merge_textlines
 from src.core.detector.postprocess import postprocess_blocks
@@ -25,6 +25,111 @@ from src.utils.image_rearrange import (
 )
 
 logger = logging.getLogger("LargeImageDetection")
+
+
+def _aabb_intersection_area(first: TextLine, second: TextLine) -> float:
+    ax1, ay1, ax2, ay2 = first.xyxy
+    bx1, by1, bx2, by2 = second.xyxy
+    width = max(0, min(ax2, bx2) - max(ax1, bx1))
+    height = max(0, min(ay2, by2) - max(ay1, by1))
+    return float(width * height)
+
+
+def _intersection_area(first: TextLine, second: TextLine) -> float:
+    try:
+        return float(first.polygon.intersection(second.polygon).area)
+    except Exception:
+        return _aabb_intersection_area(first, second)
+
+
+def _is_preferred_textline(
+    candidate_index: int,
+    candidate: TextLine,
+    existing_index: int,
+    existing: TextLine,
+) -> bool:
+    candidate_score = (candidate.confidence, candidate.area, -candidate_index)
+    existing_score = (existing.confidence, existing.area, -existing_index)
+    return candidate_score > existing_score
+
+
+def _is_duplicate_textline(
+    first: TextLine,
+    second: TextLine,
+    overlap_threshold: float = 0.8,
+    containment_threshold: float = 0.9,
+    center_distance_ratio: float = 0.5,
+) -> bool:
+    if first.direction != second.direction:
+        return False
+
+    first_area = first.area
+    second_area = second.area
+    if first_area <= 0 or second_area <= 0:
+        return False
+
+    intersection = _intersection_area(first, second)
+    if intersection <= 0:
+        return False
+
+    union = first_area + second_area - intersection
+    iou = intersection / union if union > 0 else 0.0
+    smaller_coverage = intersection / min(first_area, second_area)
+    area_ratio = min(first_area, second_area) / max(first_area, second_area)
+
+    first_w, first_h = first.xywh[2:]
+    second_w, second_h = second.xywh[2:]
+    center_limit = max(
+        3.0,
+        min(first_w, first_h, second_w, second_h) * center_distance_ratio,
+    )
+    centers_close = np.linalg.norm(first.center - second.center) <= center_limit
+
+    if iou >= 0.75:
+        return True
+    if smaller_coverage >= overlap_threshold and centers_close:
+        return True
+    return (
+        smaller_coverage >= containment_threshold
+        and area_ratio >= 0.65
+        and centers_close
+    )
+
+
+def _deduplicate_overlapping_textlines(textlines: list[TextLine]) -> list[TextLine]:
+    if len(textlines) < 2:
+        return textlines
+
+    indexed_lines = list(enumerate(textlines))
+    candidates = sorted(
+        indexed_lines,
+        key=lambda item: (item[1].confidence, item[1].area, -item[0]),
+        reverse=True,
+    )
+    kept: list[tuple[int, TextLine]] = []
+
+    for candidate_index, candidate in candidates:
+        duplicate_at = None
+        for kept_index, (_, kept_line) in enumerate(kept):
+            if _is_duplicate_textline(candidate, kept_line):
+                duplicate_at = kept_index
+                break
+
+        if duplicate_at is None:
+            kept.append((candidate_index, candidate))
+            continue
+
+        existing_index, existing_line = kept[duplicate_at]
+        output_index = min(candidate_index, existing_index)
+        if _is_preferred_textline(
+            candidate_index, candidate, existing_index, existing_line
+        ):
+            kept[duplicate_at] = (output_index, candidate)
+        else:
+            kept[duplicate_at] = (output_index, existing_line)
+
+    kept.sort(key=lambda item: item[0])
+    return [line for _, line in kept]
 
 
 class LargeImageDetectorWrapper:
@@ -194,6 +299,14 @@ class LargeImageDetectorWrapper:
         ]
         
         logger.info(f"有效文本行: {len(valid_textlines)} / {len(all_textlines)}")
+
+        deduplicated_textlines = _deduplicate_overlapping_textlines(valid_textlines)
+        if len(deduplicated_textlines) != len(valid_textlines):
+            logger.info(
+                "Removed %d duplicate textlines from overlapping slices",
+                len(valid_textlines) - len(deduplicated_textlines),
+            )
+        valid_textlines = deduplicated_textlines
         
         # 5. 合并文本行
         if merge_lines and valid_textlines:
